@@ -553,12 +553,13 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp should_dispatch_issue?(
          %Issue{} = issue,
-         %State{running: running, claimed: claimed} = state,
+         %State{running: running, completed: completed, claimed: claimed} = state,
          active_states,
          terminal_states
        ) do
     candidate_issue?(issue, active_states, terminal_states) and
       !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and
+      !MapSet.member?(completed, issue.id) and
       !MapSet.member?(claimed, issue.id) and
       !Map.has_key?(running, issue.id) and
       available_slots(state) > 0 and
@@ -804,7 +805,8 @@ defmodule SymphonyElixir.Orchestrator do
             identifier: identifier,
             error: error,
             worker_host: worker_host,
-            workspace_path: workspace_path
+            workspace_path: workspace_path,
+            delay_type: metadata[:delay_type]
           })
     }
   end
@@ -816,7 +818,8 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: Map.get(retry_entry, :identifier),
           error: Map.get(retry_entry, :error),
           worker_host: Map.get(retry_entry, :worker_host),
-          workspace_path: Map.get(retry_entry, :workspace_path)
+          workspace_path: Map.get(retry_entry, :workspace_path),
+          delay_type: Map.get(retry_entry, :delay_type)
         }
 
         {:ok, attempt, metadata, %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}}
@@ -854,6 +857,16 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.info("Issue state is terminal: issue_id=#{issue_id} issue_identifier=#{issue.identifier} state=#{issue.state}; removing associated workspace")
 
         cleanup_issue_workspace(issue.identifier, metadata[:worker_host])
+        {:noreply, release_issue_claim(state, issue_id)}
+
+      continuation_retry?(metadata) and continuation_candidate_issue?(issue, terminal_states) ->
+        handle_active_retry(state, issue, attempt, metadata)
+
+      continuation_retry?(metadata) ->
+        Logger.info(
+          "Issue left continuation-eligible states, removing claim issue_id=#{issue_id} issue_identifier=#{issue.identifier} state=#{inspect(issue.state)} state_type=#{inspect(issue.state_type)}"
+        )
+
         {:noreply, release_issue_claim(state, issue_id)}
 
       retry_candidate_issue?(issue, terminal_states) ->
@@ -1307,6 +1320,16 @@ defmodule SymphonyElixir.Orchestrator do
     candidate_issue?(issue, active_state_set(), terminal_states) and
       !todo_issue_blocked_by_non_terminal?(issue, terminal_states)
   end
+
+  defp continuation_candidate_issue?(%Issue{} = issue, terminal_states) do
+    tracker = Config.settings!().tracker
+
+    Issue.continuation_active?(issue, tracker.active_states, tracker.terminal_states) and
+      issue_routable_to_worker?(issue) and
+      !todo_issue_blocked_by_non_terminal?(issue, terminal_states)
+  end
+
+  defp continuation_retry?(metadata), do: metadata[:delay_type] == :continuation
 
   defp dispatch_slots_available?(%Issue{} = issue, %State{} = state) do
     available_slots(state) > 0 and state_slots_available?(issue, state.running)

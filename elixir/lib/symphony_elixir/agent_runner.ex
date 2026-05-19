@@ -132,24 +132,27 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp build_turn_prompt(issue, opts, 1, _max_turns), do: PromptBuilder.build_prompt(issue, opts)
 
-  defp build_turn_prompt(_issue, _opts, turn_number, max_turns) do
+  defp build_turn_prompt(%Issue{} = issue, _opts, turn_number, max_turns) do
     """
     Continuation guidance:
 
-    - The previous Codex turn completed normally, but the Linear issue is still in an active state.
+    - The previous Codex turn completed normally, and the refreshed Linear issue state is still eligible for continuation.
+    - Refreshed Linear status: #{issue_state_context(issue)}.
     - This is continuation turn ##{turn_number} of #{max_turns} for the current agent run.
     - Resume from the current workspace and workpad state instead of restarting from scratch.
     - The original task instructions and prior turn context are already present in this thread, so do not restate them before acting.
-    - Focus on the remaining ticket work and do not end the turn while the issue stays active unless you are truly blocked.
+    - Focus on the remaining ticket work and do not end the turn while this continuation-eligible state remains unless you are truly blocked.
     """
   end
 
   defp continue_with_issue?(%Issue{id: issue_id} = issue, issue_state_fetcher) when is_binary(issue_id) do
     case issue_state_fetcher.([issue_id]) do
       {:ok, [%Issue{} = refreshed_issue | _]} ->
-        if active_issue_state?(refreshed_issue.state) do
+        if continuation_active?(refreshed_issue) do
           {:continue, refreshed_issue}
         else
+          Logger.info("Stopping agent turn loop for #{issue_context(refreshed_issue)}; refreshed issue state is not continuation-eligible #{issue_state_context(refreshed_issue)}")
+
           {:done, refreshed_issue}
         end
 
@@ -163,14 +166,10 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp continue_with_issue?(issue, _issue_state_fetcher), do: {:done, issue}
 
-  defp active_issue_state?(state_name) when is_binary(state_name) do
-    normalized_state = normalize_issue_state(state_name)
-
-    Config.settings!().tracker.active_states
-    |> Enum.any?(fn active_state -> normalize_issue_state(active_state) == normalized_state end)
+  defp continuation_active?(%Issue{} = issue) do
+    tracker = Config.settings!().tracker
+    Issue.continuation_active?(issue, tracker.active_states, tracker.terminal_states)
   end
-
-  defp active_issue_state?(_state_name), do: false
 
   defp selected_worker_host(nil, []), do: nil
 
@@ -191,13 +190,11 @@ defmodule SymphonyElixir.AgentRunner do
   defp worker_host_for_log(nil), do: "local"
   defp worker_host_for_log(worker_host), do: worker_host
 
-  defp normalize_issue_state(state_name) when is_binary(state_name) do
-    state_name
-    |> String.trim()
-    |> String.downcase()
-  end
-
   defp issue_context(%Issue{id: issue_id, identifier: identifier}) do
     "issue_id=#{issue_id} issue_identifier=#{identifier}"
+  end
+
+  defp issue_state_context(%Issue{state: state, state_type: state_type}) do
+    "state=#{inspect(state)} state_type=#{inspect(state_type)}"
   end
 end
