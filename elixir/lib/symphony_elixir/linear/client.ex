@@ -20,6 +20,7 @@ defmodule SymphonyElixir.Linear.Client do
         priority
         state {
           name
+          type
         }
         branchName
         url
@@ -39,6 +40,7 @@ defmodule SymphonyElixir.Linear.Client do
               identifier
               state {
                 name
+                type
               }
             }
           }
@@ -65,6 +67,7 @@ defmodule SymphonyElixir.Linear.Client do
         priority
         state {
           name
+          type
         }
         branchName
         url
@@ -84,6 +87,7 @@ defmodule SymphonyElixir.Linear.Client do
               identifier
               state {
                 name
+                type
               }
             }
           }
@@ -455,6 +459,7 @@ defmodule SymphonyElixir.Linear.Client do
       description: issue["description"],
       priority: parse_priority(issue["priority"]),
       state: get_in(issue, ["state", "name"]),
+      state_type: get_in(issue, ["state", "type"]),
       branch_name: issue["branchName"],
       url: issue["url"],
       assignee_id: assignee_field(assignee, "id"),

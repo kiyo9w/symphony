@@ -314,7 +314,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       "title" => "Blocked todo",
       "description" => "Needs dependency",
       "priority" => 2,
-      "state" => %{"name" => "Todo"},
+      "state" => %{"name" => "Todo", "type" => "unstarted"},
       "branchName" => "mt-1",
       "url" => "https://example.org/issues/MT-1",
       "assignee" => %{
@@ -351,6 +351,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert issue.labels == ["backend"]
     assert issue.priority == 2
     assert issue.state == "Todo"
+    assert issue.state_type == "unstarted"
     assert issue.assignee_id == "user-1"
     assert issue.assigned_to_worker
   end
@@ -369,6 +370,56 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     issue = Client.normalize_issue_for_test(raw_issue, "user-1")
 
     refute issue.assigned_to_worker
+  end
+
+  test "issue continuation eligibility separates queue states from started work" do
+    active_states = ["Todo", "In Progress", "Rework"]
+    terminal_states = ["Done", "Canceled"]
+
+    assert Issue.continuation_active?(
+             %Issue{state: "In Progress", state_type: "started"},
+             active_states,
+             terminal_states
+           )
+
+    refute Issue.continuation_active?(
+             %Issue{state: "Todo", state_type: "unstarted"},
+             active_states,
+             terminal_states
+           )
+
+    refute Issue.continuation_active?(
+             %Issue{state: "Done", state_type: "completed"},
+             active_states,
+             terminal_states
+           )
+
+    refute Issue.continuation_active?(
+             %Issue{state: "Human Review", state_type: "started"},
+             active_states,
+             terminal_states
+           )
+
+    assert Issue.continuation_active?(
+             %Issue{state: "Rework"},
+             active_states,
+             terminal_states
+           )
+
+    refute Issue.continuation_active?(
+             %Issue{state: "Todo"},
+             active_states,
+             terminal_states
+           )
+
+    refute Issue.continuation_active?(
+             %Issue{state: nil},
+             active_states,
+             terminal_states
+           )
+
+    refute Issue.continuation_active?(:not_an_issue, active_states, terminal_states)
+    refute Issue.continuation_active?(%Issue{state: "In Progress"}, MapSet.new(), terminal_states)
   end
 
   test "linear client pagination merge helper preserves issue ordering" do
@@ -399,7 +450,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
         "identifier" => "MT-#{suffix}",
         "title" => "Issue #{suffix}",
         "description" => "Description #{suffix}",
-        "state" => %{"name" => "In Progress"},
+        "state" => %{"name" => "In Progress", "type" => "started"},
         "labels" => %{"nodes" => []},
         "inverseRelations" => %{"nodes" => []}
       }
@@ -425,6 +476,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert_receive {:fetch_issue_states_page, query, %{ids: ^first_batch_ids, first: 50, relationFirst: 50}}
     assert query =~ "SymphonyLinearIssuesById"
+    assert query =~ "type"
 
     assert_receive {:fetch_issue_states_page, ^query, %{ids: ^second_batch_ids, first: 5, relationFirst: 50}}
   end
@@ -556,6 +608,26 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     }
 
     assert Orchestrator.should_dispatch_issue_for_test(issue, state)
+  end
+
+  test "completed issue is not re-dispatched from Todo in the same runner session" do
+    state = %Orchestrator.State{
+      max_concurrent_agents: 3,
+      running: %{},
+      completed: MapSet.new(["completed-todo-1"]),
+      claimed: MapSet.new(),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    issue = %Issue{
+      id: "completed-todo-1",
+      identifier: "MT-1008",
+      title: "Already handled in this runner session",
+      state: "Todo"
+    }
+
+    refute Orchestrator.should_dispatch_issue_for_test(issue, state)
   end
 
   test "dispatch revalidation skips stale todo issue once a non-terminal blocker appears" do
